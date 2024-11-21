@@ -2,14 +2,16 @@ package main
 
 import (
 	"encoding/json"
-	"github.com/bwmarrin/discordgo"
-	_ "github.com/go-sql-driver/mysql"
-	"github.com/jmoiron/sqlx"
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
+
+	"github.com/bwmarrin/discordgo"
+	_ "github.com/go-sql-driver/mysql"
+	"github.com/jmoiron/sqlx"
 
 	"porygon/api"
 	"porygon/config"
@@ -17,15 +19,20 @@ import (
 	"porygon/discord"
 )
 
-func saveMessageIDs(filename string, messageIDs map[string]string) {
+func saveMessageIDs(filename string, data map[string]string) error {
 	file, err := os.Create(filename)
 	if err != nil {
-		log.Println("error creating message IDs file:", err)
-		return
+		return err
 	}
 	defer file.Close()
 
-	json.NewEncoder(file).Encode(messageIDs)
+	encoder := json.NewEncoder(file)
+	err = encoder.Encode(data)
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func loadMessageIDs(filename string) map[string]string {
@@ -144,12 +151,13 @@ func main() {
 	messageIDs := loadMessageIDs("messageIDs.json")
 
 	dg, err := discordgo.New("Bot " + c.Discord.Token)
-	defer dg.Close()
 
 	if err != nil {
 		log.Println("error creating Discord session,", err)
 		return
 	}
+
+	defer dg.Close()
 
 	log.Println("Add slash commands handlers")
 	dg.AddHandler(func(s *discordgo.Session, i *discordgo.InteractionCreate) {
@@ -207,21 +215,65 @@ func main() {
 				var msgID string
 				var ok bool
 
+				// Check if we already have a message ID for this channel
 				if msgID, ok = messageIDs[channelID]; ok {
+
+					// Try to edit the existing message
 					msg, err = dg.ChannelMessageEditEmbed(channelID, msgID, embed)
+
 					if err != nil {
-						msg, err = dg.ChannelMessageSendEmbed(channelID, embed)
+						// Check if the error is related to an invalid message ID
+						if strings.Contains(err.Error(), "Unknown Message") {
+
+							// Check if DeleteOldEmbeds is enabled, and then clean up channel before sending new message
+							if c.Config.DeleteOldEmbeds {
+								messages, err := dg.ChannelMessages(channelID, 100, "", "", "")
+								if err == nil {
+									for _, msg := range messages {
+										_ = dg.ChannelMessageDelete(channelID, msg.ID)
+									}
+								}
+							}
+
+							// Message ID is no longer valid, send a new message
+							msg, err = dg.ChannelMessageSendEmbed(channelID, embed)
+
+							if err != nil {
+								log.Println("Error sending new embed in channel", channelID, ":", err)
+								continue
+							}
+						} else {
+							// Other error cases
+							log.Println("Error editing embed in channel", channelID, ":", err)
+							continue
+						}
 					}
 				} else {
+
+					// Check if DeleteOldEmbeds is enabled, and then clean up channel before sending new message
+					if c.Config.DeleteOldEmbeds {
+						messages, err := dg.ChannelMessages(channelID, 100, "", "", "")
+						if err == nil {
+							for _, msg := range messages {
+								_ = dg.ChannelMessageDelete(channelID, msg.ID)
+							}
+						}
+					}
+
+					// No existing message ID, send a new message
 					msg, err = dg.ChannelMessageSendEmbed(channelID, embed)
+					if err != nil {
+						log.Println("Error sending embed in channel", channelID, ":", err)
+						continue
+					}
 				}
 
-				if err != nil {
-					log.Println("error sending or editing message in channel", channelID, ":", err)
-					continue
-				} else if msgID == "" || msgID != msg.ID {
+				// Update the message ID map if necessary
+				if msgID == "" || msgID != msg.ID {
 					messageIDs[channelID] = msg.ID
-					saveMessageIDs("messageIDs.json", messageIDs)
+					if err := saveMessageIDs("messageIDs.json", messageIDs); err != nil {
+						log.Println("Error saving message IDs:", err)
+					}
 				}
 			}
 

@@ -18,6 +18,7 @@ type config struct {
 	ErrorRefreshInterval int
 	IncludeActiveCounts  bool
 	EmbedTitle           string
+	DeleteOldEmbeds      bool
 }
 
 type api struct {

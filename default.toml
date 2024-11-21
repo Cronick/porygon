@@ -68,3 +68,5 @@ errorRefreshInterval = 30
 includeActiveCounts = true 
 #Title of the embed
 EmbedTitle = "Today's Pokémon Stats"
+#Delete old embeds before sending a new.
+DeleteOldEmbeds = true
